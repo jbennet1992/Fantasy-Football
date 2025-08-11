@@ -1,7 +1,522 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Netlify Smoke Test</title></head>
-<body style="font-family:system-ui;padding:2rem">
-<h1>✅ Netlify Drop works</h1>
-<p>If you can see this live, your deployment path is good. Next, deploy your real site.</p>
-</body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fantasy Draft Board — 12‑Team (Keepers, Traded Picks, Timer, CSV)</title>
+<style>
+  :root { --bg:#0f172a; --panel:#111827; --muted:#6b7280; --ink:#e5e7eb; --accent:#22d3ee; --ok:#86efac; --warn:#fde047; --bad:#fca5a5; }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  header, .wrap {max-width:1200px;margin:0 auto;padding:16px}
+  h1{font-size:20px;margin:0 0 8px} h2{font-size:16px;margin:16px 0 8px;color:#cbd5e1}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .card{background:var(--panel);border:1px solid #1f2937;border-radius:10px;padding:12px;flex:1}
+  input, select, button, textarea{background:#0b1220;color:var(--ink);border:1px solid #1f2937;border-radius:8px;padding:8px 10px}
+  input[type="number"]{width:90px} button{cursor:pointer}
+  button.primary{background:#0b1220;border-color:#334155}
+  button.primary:hover{border-color:#475569}
+  .grid{display:grid;gap:6px}
+  .draft-grid{--cols:13;display:grid;grid-template-columns:repeat(var(--cols), minmax(0,1fr));gap:6px}
+  .cell, .hdr{padding:8px;border:1px solid #243041;border-radius:8px;background:#0b1220;min-height:44px}
+  .hdr{background:#0d1526;color:#cbd5e1;font-weight:600;text-align:center}
+  .cell.pick{cursor:pointer}
+  .cell.keep{background:rgba(34,211,238,0.08);border-color:#155e75}
+  .cell.lock{opacity:.85}
+  .cell .meta{color:var(--muted);font-size:12px}
+  .pill{display:inline-block;border:1px solid #334155;border-radius:999px;padding:2px 8px;font-size:12px;color:#cbd5e1}
+  .row small{color:var(--muted)}
+  .flex{display:flex;gap:8px;align-items:center}
+  .spacer{flex:1}
+  .danger{color:var(--bad)} .ok{color:var(--ok)} .warn{color:var(--warn)}
+  .table{width:100%;border-collapse:collapse}
+  .table td,.table th{border:1px solid #243041;padding:6px 8px;text-align:left}
+  .table th{background:#0d1526}
+  .help{color:#a5b4fc}
+</style>
+</head>
+<body>
+<header>
+  <h1>Fantasy Draft Board · 12 Teams · Keepers (+2 round/yr) · Traded Picks · Timer · CSV</h1>
+  <div class="row">
+    <div class="card" style="flex:2">
+      <h2>League Setup</h2>
+      <div class="row">
+        <label>Teams (comma‑separated)<br/>
+          <input id="teamsInput" style="width:100%" placeholder="Team 1, Team 2, … Team 12">
+        </label>
+        <label>Rounds<br/><input id="roundsInput" type="number" min="1" value="16"></label>
+        <label>Snake?<br/>
+          <select id="snakeInput"><option value="1" selected>Yes</option><option value="0">No</option></select>
+        </label>
+        <label>Per‑Pick Timer (sec)<br/><input id="timerSecs" type="number" min="10" value="90"></label>
+        <div class="spacer"></div>
+        <div class="flex">
+          <button class="primary" id="applySetup">Apply / Reset Board</button>
+          <button id="saveState">Save</button>
+          <button id="loadState">Load</button>
+          <button id="clearState" class="danger">Clear</button>
+        </div>
+      </div>
+      <small class="help">Tip: set team order by listing them in Round 1 order. Trades and keepers come next.</small>
+    </div>
+    <div class="card" style="flex:1">
+      <h2>Timer</h2>
+      <div class="flex">
+        <div id="timerDisplay" style="font-size:28px;font-weight:700">—</div>
+        <span id="onTheClock" class="pill">No pick active</span>
+      </div>
+      <div class="flex" style="margin-top:6px">
+        <button id="startTimer">Start</button>
+        <button id="pauseTimer">Pause</button>
+        <button id="resetTimer">Reset</button>
+        <button id="toggleAuto">Auto‑advance: OFF</button>
+        <button id="soundToggle">Sound: ON</button>
+      </div>
+      <small>Timer resets each time a pick is made or when you click “Next Pick”.</small>
+      <div class="flex" style="margin-top:8px">
+        <button id="prevPick">Prev Pick</button>
+        <button id="nextPick">Next Pick</button>
+        <button id="undoPick" class="warn">Undo Last</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card" style="flex:1">
+      <h2>Keepers (+2 round cost per additional year)</h2>
+      <div class="row">
+        <label>Team<br/><select id="keeperTeam"></select></label>
+        <label>Player<br/><input id="keeperPlayer" placeholder="Player Name"></label>
+        <label>Last Year Cost (round)<br/><input id="keeperPrevRound" type="number" min="1" value="10"></label>
+        <label>Years Kept (including last year)<br/><input id="keeperYears" type="number" min="1" value="1"></label>
+        <button id="addKeeper" class="primary">Add / Recalc</button>
+      </div>
+      <small>Current cost = max(1, LastYearCost − 2×(YearsKept−1)). The player will lock that round’s pick.</small>
+      <div style="margin-top:8px;max-height:160px;overflow:auto">
+        <table class="table" id="keepersTable"><thead><tr>
+          <th>Team</th><th>Player</th><th>Last Year Cost</th><th>Years Kept</th><th>Current Cost</th><th>Pick Slot</th><th></th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="card" style="flex:1">
+      <h2>Pick Trades</h2>
+      <div class="row">
+        <label>Round<br/><input id="tradeRound" type="number" min="1" value="1"></label>
+        <label>Original Slot (1–12)<br/><input id="tradeSlot" type="number" min="1" max="12" value="1"></label>
+        <label>New Owning Team<br/><select id="tradeNewTeam"></select></label>
+        <button id="applyTrade" class="primary">Assign Pick</button>
+      </div>
+      <small>Assigns the (Round, Original Slot) pick to another team. Board will show “(from TeamX)”.</small>
+      <div style="margin-top:8px;max-height:160px;overflow:auto">
+        <table class="table" id="tradesTable"><thead><tr>
+          <th>Round</th><th>Orig Slot</th><th>New Owner</th><th>From</th><th></th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card" style="flex:1">
+      <h2>Export</h2>
+      <div class="flex">
+        <button id="exportCsv" class="primary">Download CSV</button>
+        <small>Includes time stamps, keeper flags, and traded‑from metadata.</small>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <h2>Draft Board</h2>
+  <div id="board" class="draft-grid"></div>
+</div>
+
+<!-- Simple pick modal -->
+<div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); align-items:center; justify-content:center;">
+  <div style="background:#0b1220;border:1px solid #334155;border-radius:12px;padding:16px;min-width:320px;max-width:90vw">
+    <div style="font-weight:700;margin-bottom:8px">Make a Pick</div>
+    <div id="modalMeta" style="color:#cbd5e1; font-size:13px; margin-bottom:8px"></div>
+    <label>Player Name<br/><input id="pickPlayer" style="width:100%" placeholder="Bijan Robinson"></label>
+    <div class="flex" style="margin-top:10px">
+      <button id="confirmPick" class="primary">Confirm</button>
+      <button id="skipPick">Skip</button>
+      <div class="spacer"></div>
+      <button id="closeModal">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ----- State -----
+  const S = {
+    teams: [], rounds: 16, snake: true,
+    picks: [], // array of {round, slot, overall, origOwner, owner, from, player, isKeeper, keeperCostRound, ts}
+    keepers: [], // {team, player, prevRound, years, currentRound, assignedPickOverall}
+    trades: [], // {round, slot, newOwner, from}
+    cursor: 1, // overall pick number (1-based)
+    timer: {secsPer: 90, remaining: 90, running: false, auto: false, sound: true, interval: null},
+    undo: []
+  };
+
+  // ----- DOM -----
+  const el = id => document.getElementById(id);
+  const boardEl = el('board');
+  const teamsInput = el('teamsInput');
+  const roundsInput = el('roundsInput');
+  const snakeInput = el('snakeInput');
+  const timerSecs = el('timerSecs');
+
+  // Fill team selects
+  function refreshTeamSelects() {
+    const sels = [el('keeperTeam'), el('tradeNewTeam')];
+    sels.forEach(sel => { sel.innerHTML = ''; S.teams.forEach(t => sel.add(new Option(t, t))); });
+  }
+
+  // Build empty draft matrix
+  function buildPicks() {
+    const {teams, rounds, snake} = S;
+    const n = teams.length;
+    S.picks = [];
+    let overall = 1;
+    for (let r=1; r<=rounds; r++) {
+      const order = snake && (r%2===0) ? [...teams].reverse() : [...teams];
+      order.forEach((team, i) => {
+        const slot = snake && (r%2===0) ? n-i : i+1; // original slot reference is position in R1
+        const origOwner = ((r%2===0) ? [...teams].reverse() : teams)[i]; // for display it’s fine, but trades use slot
+        S.picks.push({
+          round:r, slot:slot, overall:overall++,
+          origOwner: S.teams[i+0], // original slot = R1 order index+1
+          owner: S.teams[slot-1],  // default owner = original slot team
+          from: null,
+          player:null, isKeeper:false, keeperCostRound:null, ts:null
+        });
+      });
+    }
+  }
+
+  // Apply trades onto S.picks
+  function applyTradesToPicks() {
+    for (const t of S.trades) {
+      const ix = S.picks.findIndex(p => p.round===t.round && p.slot===t.slot);
+      if (ix>=0) { S.picks[ix].from = S.picks[ix].owner; S.picks[ix].owner = t.newOwner; }
+    }
+  }
+
+  // Assign keeper -> lock specific round pick for that team
+  function assignKeeper(k) {
+    const {currentRound, team} = k;
+    // Find the pick at (round=currentRound) owned by team (AFTER trades)
+    const candidates = S.picks.filter(p => p.round===currentRound && p.owner===team && !p.player);
+    if (candidates.length===0) return false;
+    const pick = candidates[0]; // take first available that fits
+    pick.player = k.player;
+    pick.isKeeper = true;
+    pick.keeperCostRound = currentRound;
+    pick.ts = new Date().toISOString();
+    k.assignedPickOverall = pick.overall;
+    return true;
+  }
+
+  function recomputeKeepers() {
+    // Clear previous keeper placements
+    for (const p of S.picks) {
+      if (p.isKeeper) { p.player=null; p.isKeeper=false; p.keeperCostRound=null; p.ts=null; }
+    }
+    for (const k of S.keepers) {
+      k.currentRound = Math.max(1, k.prevRound - 2*(k.years-1));
+      k.assignedPickOverall = null;
+    }
+    // Apply trades first, then assign keepers
+    applyTradesToPicks();
+    for (const k of S.keepers) { assignKeeper(k); }
+  }
+
+  // Render board
+  function renderBoard() {
+    // header row = Round/Overall + 12 team columns
+    boardEl.style.setProperty('--cols', S.teams.length + 1);
+    boardEl.innerHTML = '';
+    const add = (cls, html) => {
+      const d = document.createElement('div'); d.className = cls; d.innerHTML = html; boardEl.appendChild(d);
+    };
+    add('hdr', 'Round · Pick');
+    S.teams.forEach((t,i)=> add('hdr', `${i+1}. ${t}`));
+
+    for (let r=1; r<=S.rounds; r++) {
+      add('hdr', `R${r}`);
+      const row = S.picks.filter(p => p.round===r).sort((a,b)=>a.slot-b.slot);
+      row.forEach(p => {
+        const cls = ['cell','pick'];
+        if (p.isKeeper) cls.push('keep','lock');
+        if (p.overall === S.cursor) cls.push('lock');
+        const from = p.from && p.from!==p.owner ? ` <span class="meta">(from ${p.from})</span>` : '';
+        const meta = p.player
+          ? `<div class="meta">${p.isKeeper? 'KEEPER · Round '+p.keeperCostRound : 'Picked'} · #${p.overall}</div>`
+          : `<div class="meta">#${p.overall}${from}</div>`;
+        add(cls.join(' '),
+          `<div>${p.player? `<strong>${p.player}</strong>`:`<em>empty</em>`} — <span>${p.owner}</span>${from}</div>${meta}`
+        );
+        boardEl.lastChild.onclick = () => onCellClick(p);
+      });
+    }
+    el('onTheClock').textContent = activePick()? `On the clock: ${activePick().owner} (#${S.cursor})` : 'Draft complete';
+  }
+
+  // Modal interactions
+  let modalPick = null;
+  function onCellClick(p) {
+    // Only allow picking the current/empty pick (or editing a keeper?—we’ll block)
+    if (p.isKeeper) return; // locked
+    modalPick = p;
+    el('modalMeta').textContent = `Round ${p.round}, Pick ${p.slot} (Overall #${p.overall}) · ${p.owner}${p.from && p.from!==p.owner? ` (from ${p.from})`:''}`;
+    el('pickPlayer').value = p.player || '';
+    el('modal').style.display='flex';
+  }
+  el('closeModal').onclick = () => { el('modal').style.display='none'; };
+  el('skipPick').onclick = () => { if (!modalPick) return; confirmSelection('(skipped)'); };
+  el('confirmPick').onclick = () => {
+    if (!modalPick) return;
+    const name = el('pickPlayer').value.trim();
+    if (!name) { alert('Enter a player name (or press Skip).'); return; }
+    confirmSelection(name);
+  };
+
+  function confirmSelection(name) {
+    const p = modalPick;
+    if (!p) return;
+    if (p.overall!==S.cursor) {
+      // allow editing historical (non-keeper) picks; track undo
+      S.undo.push(JSON.stringify(S.picks));
+      p.player = name==='(skipped)'? null : name;
+      p.ts = new Date().toISOString();
+      el('modal').style.display='none';
+      renderBoard();
+      return;
+    }
+    S.undo.push(JSON.stringify(S.picks));
+    p.player = name==='(skipped)'? null : name;
+    p.ts = new Date().toISOString();
+    el('modal').style.display='none';
+    advanceCursor();
+  }
+
+  // Cursor / active pick
+  function activePick(){ return S.picks.find(p => p.overall===S.cursor); }
+  function findNextOpen(fromOverall) {
+    for (let i=fromOverall+1; i<=S.picks.length; i++) {
+      const p = S.picks[i-1];
+      if (!p.isKeeper && !p.player) return i;
+    }
+    return null;
+  }
+  function advanceCursor() {
+    // move to next non-keeper, empty pick
+    const next = findNextOpen(S.cursor);
+    S.cursor = next || S.picks.length+1;
+    renderBoard();
+    resetTimer(true);
+    if (S.timer.auto && next) startTimer();
+    beep(220, 0.08);
+  }
+  function prevCursor() {
+    for (let i=S.cursor-1; i>=1; i--) {
+      const p = S.picks[i-1];
+      if (!p.isKeeper) { S.cursor = i; break; }
+    }
+    renderBoard();
+    resetTimer(false);
+  }
+
+  // ----- Timer -----
+  function startTimer() {
+    if (S.timer.running) return;
+    if (!activePick()) return;
+    S.timer.running = true;
+    if (S.timer.interval) clearInterval(S.timer.interval);
+    S.timer.interval = setInterval(tick, 1000);
+  }
+  function pauseTimer() {
+    S.timer.running = false;
+    if (S.timer.interval) clearInterval(S.timer.interval);
+  }
+  function resetTimer(restart=false) {
+    S.timer.remaining = S.timer.secsPer;
+    updateTimerDisplay();
+    if (restart) { pauseTimer(); startTimer(); }
+  }
+  function tick() {
+    if (!S.timer.running) return;
+    if (S.timer.remaining>0) {
+      S.timer.remaining--;
+      updateTimerDisplay();
+      if (S.timer.remaining===0) {
+        if (S.timer.sound) beep(440,0.25);
+        pauseTimer();
+      }
+    }
+  }
+  function updateTimerDisplay() {
+    el('timerDisplay').textContent = formatSecs(S.timer.remaining);
+  }
+  function formatSecs(s) { const m = Math.floor(s/60), ss = String(s%60).padStart(2,'0'); return `${m}:${ss}`; }
+
+  // Simple beep with WebAudio
+  let audioCtx;
+  function beep(freq, dur) {
+    if (!S.timer.sound) return;
+    try {
+      audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type='sine'; o.frequency.value=freq; o.connect(g); g.connect(audioCtx.destination);
+      g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime+0.02);
+      o.start();
+      g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime+dur);
+      o.stop(audioCtx.currentTime+dur+0.02);
+    } catch(e){}
+  }
+
+  // ----- CSV -----
+  function exportCsv() {
+    const headers = ['Round','Pick','Overall','Team','From','Player','IsKeeper','KeeperCostRound','Timestamp'];
+    const rows = S.picks.map(p => [
+      p.round, p.slot, p.overall, p.owner, p.from||'', p.player||'', p.isKeeper?1:0, p.keeperCostRound||'', p.ts||''
+    ]);
+    const csv = [headers.join(','), ...rows.map(r=>r.map(v => String(v).includes(',')||String(v).includes('"') ? `"${String(v).replace(/"/g,'""')}"` : v).join(','))].join('\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download='draft_results.csv'; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ----- Trades & Keepers Tables -----
+  function renderKeepersTable() {
+    const tb = el('keepersTable').querySelector('tbody'); tb.innerHTML = '';
+    for (let i=0;i<S.keepers.length;i++) {
+      const k=S.keepers[i];
+      const tr=document.createElement('tr');
+      tr.innerHTML = `<td>${k.team}</td><td>${k.player}</td><td>${k.prevRound}</td><td>${k.years}</td>
+        <td>${k.currentRound}</td><td>${k.assignedPickOverall? '#'+k.assignedPickOverall : '—'}</td>
+        <td><button data-i="${i}" class="delK">Remove</button></td>`;
+      tb.appendChild(tr);
+    }
+    tb.querySelectorAll('.delK').forEach(b => b.onclick = (e)=>{ S.keepers.splice(+e.target.dataset.i,1); recomputeKeepers(); renderKeepersTable(); renderBoard(); });
+  }
+  function renderTradesTable() {
+    const tb = el('tradesTable').querySelector('tbody'); tb.innerHTML = '';
+    for (let i=0;i<S.trades.length;i++) {
+      const t=S.trades[i];
+      const tr=document.createElement('tr');
+      tr.innerHTML = `<td>${t.round}</td><td>${t.slot}</td><td>${t.newOwner}</td><td>${t.from}</td>
+        <td><button data-i="${i}" class="delT">Remove</button></td>`;
+      tb.appendChild(tr);
+    }
+    tb.querySelectorAll('.delT').forEach(b => b.onclick = (e)=>{ S.trades.splice(+e.target.dataset.i,1); applyTradesToPicks(); recomputeKeepers(); renderTradesTable(); renderBoard(); });
+  }
+
+  // ----- Storage -----
+  function saveState() {
+    const data = JSON.stringify(S);
+    localStorage.setItem('ff_draft_board_state', data);
+    alert('Saved.');
+  }
+  function loadState() {
+    const raw = localStorage.getItem('ff_draft_board_state');
+    if (!raw) return alert('No saved state found.');
+    const obj = JSON.parse(raw);
+    Object.assign(S, obj);
+    // fix methods-less state after revive
+    pauseTimer();
+    refreshTeamSelects();
+    renderTradesTable();
+    renderKeepersTable();
+    renderBoard();
+    updateTimerDisplay();
+    el('toggleAuto').textContent = 'Auto‑advance: ' + (S.timer.auto?'ON':'OFF');
+    el('soundToggle').textContent = 'Sound: ' + (S.timer.sound?'ON':'OFF');
+    alert('Loaded.');
+  }
+  function clearState() { localStorage.removeItem('ff_draft_board_state'); alert('Cleared.'); }
+
+  // ----- Wiring -----
+  el('applySetup').onclick = () => {
+    const teams = teamsInput.value.split(',').map(s=>s.trim()).filter(Boolean);
+    if (teams.length!==12) { alert('Please enter exactly 12 team names, comma‑separated, in Round‑1 order.'); return; }
+    S.teams = teams;
+    S.rounds = Math.max(1, +roundsInput.value||16);
+    S.snake = snakeInput.value==='1';
+    S.timer.secsPer = Math.max(10, +timerSecs.value||90);
+    S.timer.remaining = S.timer.secsPer;
+    S.trades=[]; S.keepers=[]; S.undo=[]; S.cursor=1;
+    refreshTeamSelects();
+    buildPicks();
+    applyTradesToPicks();
+    recomputeKeepers();
+    renderTradesTable();
+    renderKeepersTable();
+    renderBoard();
+    updateTimerDisplay();
+  };
+
+  el('addKeeper').onclick = () => {
+    if (S.teams.length!==12) return alert('Set up teams first.');
+    const team = el('keeperTeam').value;
+    const player = el('keeperPlayer').value.trim();
+    const prevRound = Math.max(1, +el('keeperPrevRound').value||1);
+    const years = Math.max(1, +el('keeperYears').value||1);
+    if (!team || !player) return alert('Team and player required.');
+    // If player already exists in keepers, update
+    const existing = S.keepers.find(k => k.player.toLowerCase()===player.toLowerCase() && k.team===team);
+    if (existing) { existing.prevRound = prevRound; existing.years = years; }
+    else S.keepers.push({team, player, prevRound, years, currentRound:null, assignedPickOverall:null});
+    recomputeKeepers();
+    renderKeepersTable();
+    renderBoard();
+  };
+
+  el('applyTrade').onclick = () => {
+    if (S.teams.length!==12) return alert('Set up teams first.');
+    const round = Math.max(1, +el('tradeRound').value||1);
+    const slot = Math.max(1, Math.min(12, +el('tradeSlot').value||1));
+    const newOwner = el('tradeNewTeam').value;
+    const fromTeam = S.teams[slot-1];
+    // replace if exists
+    const i = S.trades.findIndex(t=>t.round===round && t.slot===slot);
+    if (i>=0) S.trades[i] = {round, slot, newOwner, from: fromTeam};
+    else S.trades.push({round, slot, newOwner, from: fromTeam});
+    applyTradesToPicks();
+    recomputeKeepers();
+    renderTradesTable();
+    renderBoard();
+  };
+
+  el('exportCsv').onclick = exportCsv;
+  el('saveState').onclick = saveState;
+  el('loadState').onclick = loadState;
+  el('clearState').onclick = clearState;
+
+  el('startTimer').onclick = startTimer;
+  el('pauseTimer').onclick = pauseTimer;
+  el('resetTimer').onclick = () => resetTimer(false);
+  el('toggleAuto').onclick = (e)=>{ S.timer.auto = !S.timer.auto; e.target.textContent='Auto‑advance: '+(S.timer.auto?'ON':'OFF'); };
+  el('soundToggle').onclick = (e)=>{ S.timer.sound = !S.timer.sound; e.target.textContent='Sound: '+(S.timer.sound?'ON':'OFF'); };
+
+  el('prevPick').onclick = ()=> prevCursor();
+  el('nextPick').onclick = ()=> advanceCursor();
+  el('undoPick').onclick = ()=> {
+    if (!S.undo.length) return;
+    const prev = JSON.parse(S.undo.pop());
+    Object.assign(S, prev);
+    pauseTimer();
+    renderTradesTable(); renderKeepersTable(); renderBoard(); updateTimerDisplay();
+  };
+
+  // Prefill example team names for convenience
+  teamsInput.value = Array.from({length:12}, (_,i)=>`Team ${i+1}`).join(', ');
+  updateTimerDisplay();
+})();
+</script>
+</body>
+</html>
